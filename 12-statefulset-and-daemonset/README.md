@@ -17,6 +17,8 @@
 
 1. [Stateless vs stateful apps](#1-stateless-vs-stateful-apps)
 2. [StatefulSet](#2-statefulset)
+   - [2.1 How each Pod gets its own volume automatically](#21-how-each-pod-gets-its-own-volume-automatically)
+   - [2.2 Why the data is safe: what survives what](#22-why-the-data-is-safe-what-survives-what)
 3. [DaemonSet](#3-daemonset)
 4. [Which workload to use](#4-which-workload-to-use)
 
@@ -104,6 +106,48 @@ spec:
 **What real projects do:** on AWS, most teams run databases as **managed services** (RDS for MySQL, DocumentDB for MongoDB, ElastiCache for Redis, Amazon MQ for RabbitMQ) and keep EKS for stateless apps. StatefulSets are used when a team runs its own Kafka, Elasticsearch, MongoDB or similar inside the cluster.
 
 > **Interview one-liner:** A StatefulSet gives each Pod a fixed name, its own PVC and its own DNS name through a headless Service, and starts and stops Pods in order; we use it for databases and clustered apps, while Deployments are for stateless apps.
+
+### 2.1 How each Pod gets its own volume automatically
+
+**Definition:** we never create a PV or a PVC for each Pod by hand. We write **one `volumeClaimTemplates`** in the StatefulSet. The **StatefulSet** creates **one PVC per Pod** from it, and **dynamic provisioning** (the StorageClass + EBS CSI driver) creates **one EBS volume (PV) per PVC**. Each volume is then mounted only into its own Pod.
+
+```
+ 1. We write:      StatefulSet mysql, replicas: 3, ONE volumeClaimTemplate (name: data, 10Gi, gp3)
+ 2. StatefulSet:   creates Pods mysql-0, mysql-1, mysql-2
+                   + one PVC each: data-mysql-0, data-mysql-1, data-mysql-2
+ 3. Dynamic provisioning: StorageClass gp3 sees each PVC ──► creates one EBS volume (PV) per PVC
+ 4. Bind:          data-mysql-0 ⇄ EBS vol A   data-mysql-1 ⇄ EBS vol B   data-mysql-2 ⇄ EBS vol C
+ 5. Mount:         vol A is attached to mysql-0's node and mounted at /var/lib/mysql inside mysql-0
+```
+
+| Step | Who does it |
+|---|---|
+| Write the template (size, StorageClass, access mode) | **We**, once in the YAML |
+| Create a PVC for each Pod (`<template>-<pod>`) | **StatefulSet** |
+| Create an EBS volume (PV) for each PVC | **Dynamic provisioning**: StorageClass + EBS CSI driver ([Storage](../11-storage-volumes-pv-pvc/README.md)) |
+| Attach the volume to the node and mount it into the Pod | **Kubelet + EBS CSI driver**, at the `mountPath` we set |
+
+> 💡 **Dynamic provisioning is not a StatefulSet.** Dynamic provisioning is a **storage** feature: it creates a disk whenever **any** PVC asks (a plain Pod or Deployment too). A StatefulSet is a **workload** that creates **one PVC per Pod**; those PVCs are then filled by dynamic provisioning.
+
+### 2.2 Why the data is safe: what survives what
+
+The data lives on the **EBS volume**, not inside the container, the Pod or the node. So when any of those die, the volume is simply **attached again** to the new Pod.
+
+| What dies / is deleted | What happens to the data |
+|---|---|
+| **Container** crashes and restarts | ✅ Safe. Same Pod, same volume, still mounted |
+| **Pod** is deleted (`mysql-1`) | ✅ Safe. The new Pod is again called `mysql-1`, gets the **same PVC** `data-mysql-1` and the **same EBS volume** |
+| **Node** dies | ✅ Safe. The volume is detached; `mysql-1` is recreated on another node **in the same AZ** and the volume is attached there |
+| **StatefulSet** deleted or scaled down | ✅ Safe. PVCs and volumes are **kept**; scaling up or recreating reattaches them |
+| **PVC** deleted (reclaim policy `Delete`) | ❌ **Lost**. The PV and the EBS volume are deleted too |
+
+```
+ mysql-1 Pod dies ──► new Pod "mysql-1" (same name) ──► same PVC data-mysql-1 ──► same EBS vol B ──► old data is back ✅
+```
+
+> ⚠️ An EBS volume lives in **one AZ**. If no node with free space is left in that AZ, the new Pod stays `Pending` until one is. For extra safety, take **EBS snapshots** (backups), and use `reclaimPolicy: Retain` for production data so deleting a PVC doesn't delete the disk.
+
+> **Interview one-liner:** In a StatefulSet we write one volumeClaimTemplates; it creates a PVC per Pod, dynamic provisioning creates an EBS volume per PVC, and each volume is mounted only into its own Pod. The data lives on the EBS volume, so it survives container, Pod and node failures: the recreated Pod gets the same name, the same PVC and the same volume back.
 
 ---
 
@@ -345,6 +389,7 @@ kubectl delete -f node-agent.yaml
 
 ## 6. What I learned
 
+- **Automatic volumes:** one `volumeClaimTemplates` → StatefulSet makes **one PVC per Pod** → dynamic provisioning makes **one EBS volume per PVC** → mounted into its own Pod. Data survives container, Pod and node failures; only deleting the PVC deletes it.
 - **Stateless** → Deployment. **Stateful** → StatefulSet: fixed names (`web-0`), **one PVC per Pod**, ordered start / stop, per-Pod DNS via a **headless Service**. PVCs stay after delete.
 - On AWS, databases usually run on **RDS / DocumentDB / ElastiCache**, not in StatefulSets.
 - **DaemonSet** = one Pod per node, added to new nodes automatically: CNI, kube-proxy, log and metric agents, Falco. Usually tolerates all taints.
@@ -385,6 +430,12 @@ It runs one Pod on every (or every selected) node and adds one to new nodes auto
 
 **Q6. Why isn't a DaemonSet Pod running on one of the nodes?**
 That node has a taint the Pod doesn't tolerate, or the DaemonSet has a nodeSelector that the node doesn't match, or the node lacks resources. Check `kubectl describe node` and the DaemonSet's tolerations.
+
+**Q7. How does each StatefulSet Pod get its own persistent volume?**
+We write one `volumeClaimTemplates`. The StatefulSet creates a PVC per Pod (`data-mysql-0`, `data-mysql-1`…), dynamic provisioning creates an EBS volume for each PVC, and each volume is mounted only into its own Pod.
+
+**Q8. A StatefulSet Pod's node dies. Is the data lost?**
+No. The data is on the EBS volume, not the node. The Pod is recreated with the same name on another node in the same AZ, gets the same PVC and the same volume attached, so the data is back. It's lost only if the PVC is deleted with reclaim policy Delete.
 
 ---
 

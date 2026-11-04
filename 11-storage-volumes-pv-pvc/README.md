@@ -71,6 +71,8 @@
 | Who creates the PV | An admin, by hand | The **StorageClass**, when a PVC asks |
 | Real projects | Rare (old disks, NFS) | **Almost always** |
 
+> 💡 **Dynamic provisioning is not a StatefulSet.** It's how a StorageClass creates a disk for **any** PVC (a Pod or Deployment too). A **StatefulSet** uses it to give **each Pod its own disk**: see [how each Pod gets its own volume](../12-statefulset-and-daemonset/README.md#21-how-each-pod-gets-its-own-volume-automatically).
+
 **Access modes:**
 
 | Mode | Meaning | AWS storage |
