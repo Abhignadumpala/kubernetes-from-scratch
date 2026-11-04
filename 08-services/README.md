@@ -625,8 +625,3 @@ Route 53 resolves the domain to the ALB; the ALB ends HTTPS and matches the Ingr
 ---
 
 **Source:** [Kubernetes docs: Service](https://kubernetes.io/docs/concepts/services-networking/service/) · [Ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/) · [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/) · [EKS: network load balancing](https://docs.aws.amazon.com/eks/latest/userguide/network-load-balancing.html) · [EKS: application load balancing](https://docs.aws.amazon.com/eks/latest/userguide/alb-ingress.html)
-
-
----
-
-**Source:** [Kubernetes docs: Service](https://kubernetes.io/docs/concepts/services-networking/service/) · [Ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/) · [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/) · [EKS: network load balancing](https://docs.aws.amazon.com/eks/latest/userguide/network-load-balancing.html) · [EKS: application load balancing](https://docs.aws.amazon.com/eks/latest/userguide/alb-ingress.html)

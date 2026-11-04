@@ -8,7 +8,7 @@
 
 | Part | Topic | What you learn |
 |---|---|---|
-| **Part 1: Concepts** | Why Ingress, Ingress, Ingress controller, request flow, sample, rules | What each piece is, how a request reaches the Pod, how to write host and path rules |
+| **Part 1: Concepts** | Why Ingress, Ingress, Ingress controller, request flow, sample, Service type vs Ingress (RoboShop example), rules | What each piece is, how a request reaches the Pod, how to write host and path rules |
 | **Part 2: Lab** | Two apps behind one ALB on EKS | Create an Ingress with host rules and test it |
 
 > Related: Services (ClusterIP, NodePort, LoadBalancer) are in [Services](../08-services/README.md).
@@ -22,24 +22,29 @@
 3. [What is an Ingress controller?](#3-what-is-an-ingress-controller)
 4. [How a user request reaches the Pod](#4-how-a-user-request-reaches-the-pod)
 5. [Sample Ingress (ALB on EKS)](#5-sample-ingress-alb-on-eks)
-6. [Ingress rules](#6-ingress-rules)
-   - [6.1 Parts of a rule](#61-parts-of-a-rule)
-   - [6.2 pathType](#62-pathtype)
-   - [6.3 Host-based routing](#63-host-based-routing)
-   - [6.4 Path-based routing](#64-path-based-routing)
-   - [6.5 Rewrite: removing the prefix (NGINX controller)](#65-rewrite-removing-the-prefix-nginx-controller)
-   - [6.6 Default backend and HTTPS](#66-default-backend-and-https)
-   - [6.7 Host or path: which one?](#67-host-or-path-which-one)
+6. [Where does the load balancer come from? (Service type vs Ingress)](#6-where-does-the-load-balancer-come-from-service-type-vs-ingress)
+   - [6.1 Which Service type do I write?](#61-which-service-type-do-i-write)
+   - [6.2 How the ALB is created without `type: LoadBalancer`](#62-how-the-alb-is-created-without-type-loadbalancer)
+   - [6.3 Ingress is an object, not a Service](#63-ingress-is-an-object-not-a-service)
+   - [6.4 RoboShop example: everything ClusterIP, one Ingress](#64-roboshop-example-everything-clusterip-one-ingress)
+7. [Ingress rules](#7-ingress-rules)
+   - [7.1 Parts of a rule](#71-parts-of-a-rule)
+   - [7.2 pathType](#72-pathtype)
+   - [7.3 Host-based routing](#73-host-based-routing)
+   - [7.4 Path-based routing](#74-path-based-routing)
+   - [7.5 Rewrite: removing the prefix (NGINX controller)](#75-rewrite-removing-the-prefix-nginx-controller)
+   - [7.6 Default backend and HTTPS](#76-default-backend-and-https)
+   - [7.7 Host or path: which one?](#77-host-or-path-which-one)
 
 **Part 2: Lab**
 
-7. [Lab: two apps behind one ALB](#7-lab-two-apps-behind-one-alb)
+8. [Lab: two apps behind one ALB](#8-lab-two-apps-behind-one-alb)
 
 **Wrap-up**
 
-8. [What I learned](#8-what-i-learned)
-9. [Commands](#9-commands)
-10. [Interview Questions](#10-interview-questions)
+9. [What I learned](#9-what-i-learned)
+10. [Commands](#10-commands)
+11. [Interview Questions](#11-interview-questions)
 
 ---
 
@@ -226,7 +231,7 @@ spec:
               number: 80
 ```
 
-> An **NGINX** example with path rewrite is in [section 6.5](#65-rewrite-removing-the-prefix-nginx-controller).
+> An **NGINX** example with path rewrite is in [section 7.5](#75-rewrite-removing-the-prefix-nginx-controller).
 
 **No NodePort or LoadBalancer Service is needed.** On EKS every Pod has a **real VPC IP**, so the ALB sends traffic **straight to the Ready Pod IPs**. The ClusterIP Service is still needed: it **groups the Ready Pods**, and the controller gives that list to the ALB.
 
@@ -240,7 +245,268 @@ spec:
 
 ---
 
-## 6. Ingress rules
+## 6. Where does the load balancer come from? (Service type vs Ingress)
+
+**Definition:** on EKS a cloud load balancer can be created in **two ways**. A **Service with `type: LoadBalancer`** gets its **own** load balancer (one per Service). An **Ingress** gets a load balancer from the **Ingress controller**, and many apps can **share** that one. In real projects every app Service is **ClusterIP**, and the Ingress is the only door from the internet.
+
+| | Way 1: Service `type: LoadBalancer` | Way 2: Ingress ✅ |
+|---|---|---|
+| What you write | `kind: Service` with `type: LoadBalancer` | `kind: Ingress` with `ingressClassName: alb` |
+| Who creates the load balancer | The AWS Load Balancer Controller reads the **Service** | The AWS Load Balancer Controller reads the **Ingress** |
+| What AWS creates | **One NLB per Service** | **One ALB** shared by many apps |
+| 10 apps → | 10 load balancers 💸 | 1 load balancer |
+| Routing by host / path | ❌ No | ✅ Yes |
+| App Services | LoadBalancer | **ClusterIP** |
+
+```
+ ❌ Costly:  frontend Svc (LoadBalancer) ──► LB 1      ✅ Real projects:  Ingress ──► ONE ALB ──► frontend Svc (ClusterIP)
+             catalogue Svc (LoadBalancer) ──► LB 2                                              (other Svcs: ClusterIP, internal)
+             cart Svc (LoadBalancer)      ──► LB 3
+```
+
+### 6.1 Which Service type do I write?
+
+| Service type | Do we write it for our apps? | When it's used |
+|---|---|---|
+| **ClusterIP** | ✅ **Yes, for every app** | Default. Reached by the Ingress (ALB) or by other Pods inside the cluster |
+| **LoadBalancer** | ❌ Not for web apps | Non-HTTP traffic (TCP/UDP) that needs its own NLB, or the NGINX controller's own Service (made by its Helm chart, not by us) |
+| **NodePort** | ❌ No | Quick tests, or on-prem clusters without a cloud load balancer |
+
+### 6.2 How the ALB is created without `type: LoadBalancer`
+
+Nowhere in the Ingress do we write `LoadBalancer`. An Ingress doesn't even have a `type` field. The ALB still appears because of **one line**:
+
+```yaml
+  ingressClassName: alb        # ← this hands the Ingress to the AWS Load Balancer Controller
+```
+
+```
+ 1. We run kubectl apply -f roboshop.yaml
+ 2. The Ingress is saved in the cluster (only rules, nothing in AWS yet)
+ 3. The AWS Load Balancer Controller sees an Ingress with ingressClassName: alb
+ 4. It calls the AWS API ──► creates the ALB, listener, target group and rules
+ 5. kubectl get ingress ──► ADDRESS = the ALB's DNS name
+```
+
+The **annotations** don't create the ALB; they only **configure** it:
+
+| Annotation | What it sets |
+|---|---|
+| `alb.ingress.kubernetes.io/scheme: internet-facing` | Public ALB (`internal` = private, only inside the VPC) |
+| `alb.ingress.kubernetes.io/target-type: ip` | ALB sends traffic straight to Pod IPs |
+| `alb.ingress.kubernetes.io/group.name: roboshop` | Ingresses with the same group name share **one ALB** |
+
+> ⚠️ This works only when the **AWS Load Balancer Controller is installed** (once per cluster, with Helm). Without it, the Ingress shows an empty `ADDRESS` and no ALB is created.
+
+**With the NGINX controller it's different:** NGINX can't create an ALB, so its Helm chart creates **its own Service with `type: LoadBalancer`** in front of the NGINX Pods (AWS makes one NLB). Our apps still stay ClusterIP, and we still don't write that Service ourselves.
+
+| Controller | Where the one load balancer comes from |
+|---|---|
+| **AWS Load Balancer Controller** (EKS) | Created from the **Ingress** (`ingressClassName: alb`) → ALB |
+| **NGINX Ingress Controller** | Created from the **controller's own LoadBalancer Service** (Helm chart) → NLB → NGINX Pods |
+
+### 6.3 Ingress is an object, not a Service
+
+`kind: Ingress` is its **own kind of object**. "Ingress Service" is a common mix-up: there's no Service type called Ingress.
+
+| Object | Level | Note |
+|---|---|---|
+| **Ingress** | **Namespace** | Routes only to Services in **its own** namespace |
+| **Service** | Namespace | `frontend`, `catalogue`… |
+| **IngressClass** (`alb`) | **Cluster** | Says which controller handles Ingresses |
+| **Ingress controller** | Runs in `kube-system` | Watches Ingresses in **all** namespaces |
+
+**One ALB isn't limited to one namespace:** by default each Ingress gets its own ALB. Ingresses with the **same `group.name`**, even in different namespaces, share **one ALB**. Most projects run one public ALB per cluster.
+
+```
+ roboshop ns:  roboshop-ingress (group.name: roboshop) ─┐
+                                                        ├──► ONE ALB
+ argocd ns:    argocd-ingress   (group.name: roboshop) ─┘
+```
+
+### 6.4 RoboShop example: everything ClusterIP, one Ingress
+
+In RoboShop only the **frontend** faces users. The frontend's nginx forwards `/api/catalogue/`, `/api/cart/` and the other API paths to the backend Services **by name** (CoreDNS). So only the frontend goes behind the Ingress, and every backend and database stays internal.
+
+The file shows the frontend, one backend (`catalogue`) and one database (`mongodb`). `cart`, `user`, `shipping`, `payment`, `redis`, `mysql` and `rabbitmq` follow the same pattern as `catalogue` / `mongodb`.
+
+```yaml
+# roboshop.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: roboshop
+---
+# ---------- frontend: the only app users reach ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: roboshop
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: <your-registry>/roboshop-frontend:v1   # nginx: serves the UI + forwards /api/* to backends
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: roboshop
+spec:
+  type: ClusterIP              # NOT LoadBalancer: the Ingress (ALB) is the public door
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      targetPort: 80
+---
+# ---------- catalogue: backend, internal only ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalogue
+  namespace: roboshop
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: catalogue
+  template:
+    metadata:
+      labels:
+        app: catalogue
+    spec:
+      containers:
+        - name: catalogue
+          image: <your-registry>/roboshop-catalogue:v1
+          ports:
+            - containerPort: 8080
+          env:
+            - name: MONGO
+              value: "true"
+            - name: MONGO_URL
+              value: "mongodb://mongodb:27017/catalogue"   # Service name, found by CoreDNS
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalogue              # the frontend's nginx calls http://catalogue:8080
+  namespace: roboshop
+spec:
+  type: ClusterIP
+  selector:
+    app: catalogue
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---------- mongodb: database, internal only ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+  namespace: roboshop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: <your-registry>/roboshop-mongodb:v1
+          ports:
+            - containerPort: 27017
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: roboshop
+spec:
+  type: ClusterIP
+  selector:
+    app: mongodb
+  ports:
+    - port: 27017
+      targetPort: 27017
+---
+# ---------- Ingress: the ONLY way in from the internet ----------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: roboshop-ingress
+  namespace: roboshop
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing   # public ALB
+    alb.ingress.kubernetes.io/target-type: ip           # ALB → Pod IPs directly
+    alb.ingress.kubernetes.io/group.name: roboshop      # share ONE ALB across Ingresses
+spec:
+  ingressClassName: alb        # the AWS Load Balancer Controller creates the ALB
+  rules:
+    - host: roboshop.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+```
+
+**How a RoboShop request flows:**
+
+```
+ User ──► roboshop.example.com (Route 53) ──► ALB (created by the controller from the Ingress)
+      ──► frontend Pods ──/api/catalogue/──► catalogue Service (ClusterIP) ──► catalogue Pods
+                                                ──► mongodb Service (ClusterIP) ──► mongodb Pod
+```
+
+**Check it after `kubectl apply -f roboshop.yaml`:**
+
+```bash
+kubectl get svc -n roboshop
+```
+
+**Expected:** `frontend`, `catalogue` and `mongodb`, every `TYPE` is `ClusterIP`.
+
+```bash
+kubectl get ingress -n roboshop
+```
+
+**Expected:** `roboshop-ingress`, class `alb`, `ADDRESS` = the ALB's DNS name (after 2–3 minutes).
+
+```bash
+kubectl get svc -A | grep LoadBalancer
+```
+
+**Expected:** nothing from `roboshop`, so no extra load balancers are costing money.
+
+> **Production:** run MongoDB as a [StatefulSet](../12-statefulset-and-daemonset/README.md) with a PVC, or use Amazon DocumentDB. Add HTTPS with the `certificate-arn` annotation ([Security at the front door](#security-at-the-front-door)).
+
+> **Interview one-liner:** Every app Service is ClusterIP. On EKS I don't write `type: LoadBalancer`: an Ingress with `ingressClassName: alb` tells the AWS Load Balancer Controller to create one ALB, `group.name` lets many Ingresses share it, and the rules route by host and path to the ClusterIP Services. With NGINX, the one load balancer comes from the controller's own LoadBalancer Service.
+
+---
+
+## 7. Ingress rules
 
 **Definition:** **Ingress rules** are the part of an Ingress (`spec.rules`) that decide **which Service** gets each HTTP request. Each rule can match the request's **host** (the domain name, like `api.shop.com`) and its **path** (the part after the domain, like `/api`). The Ingress controller turns these rules into load balancer rules, so one load balancer can serve many apps.
 
@@ -250,7 +516,7 @@ spec:
            (one ALB)   └── shop.com/blog     ──► blog Service       (path rule)
 ```
 
-### 6.1 Parts of a rule
+### 7.1 Parts of a rule
 
 ```yaml
 spec:
@@ -276,7 +542,7 @@ spec:
 | `pathType` | How to compare the path (below) |
 | `backend.service` | The **ClusterIP Service** and port that gets the request |
 
-### 6.2 pathType
+### 7.2 pathType
 
 | pathType | Rule `/api` matches | Doesn't match |
 |---|---|---|
@@ -286,7 +552,7 @@ spec:
 
 If several paths match, the **longest** one wins, so `/api` beats `/`. That's why `/` works as the "everything else" rule.
 
-### 6.3 Host-based routing
+### 7.3 Host-based routing
 
 **Definition:** **host-based routing** (also called **name-based virtual hosting**) sends requests to different apps based on the **domain name** (the `Host` header) the user typed. Each app gets its own subdomain, all pointing (in Route 53) to the **same** load balancer.
 
@@ -319,7 +585,7 @@ If several paths match, the **longest** one wins, so `/api` beats `/`. That's wh
 | `app.shop.com/anything` | frontend |
 | `api.shop.com/anything` | api |
 
-### 6.4 Path-based routing
+### 7.4 Path-based routing
 
 **Definition:** **path-based routing** (also called a **fanout**: one entry point fanning out to many Services) sends requests to different apps based on the **path** of the URL, all under **one** domain.
 
@@ -351,7 +617,7 @@ If several paths match, the **longest** one wins, so `/api` beats `/`. That's wh
 
 > ⚠️ **The app receives the full path.** The blog app gets `/blog/post-1`, not `/post-1`. So the app must serve its pages **under `/blog`** (most apps have a "base path" setting). If it only serves `/`, it returns **404**: the Ingress worked, but the app has no page at `/blog`. That's what **rewrite** solves (next).
 
-### 6.5 Rewrite: removing the prefix (NGINX controller)
+### 7.5 Rewrite: removing the prefix (NGINX controller)
 
 **Definition:** a **rewrite** changes the URL path **before** the request reaches the app. With the NGINX Ingress controller, `/nginx/about` can be rewritten to `/about`, so an app that only knows `/` still works behind a path prefix. It's set with **annotations** (extra settings for the controller).
 
@@ -413,7 +679,7 @@ spec:
 > - The community **NGINX Ingress controller (ingress-nginx)** was retired in March 2026 (no more updates). New setups use the **ALB** on EKS or the newer **Gateway API**. You'll still see it in many existing clusters.
 > - Regex paths use `pathType: ImplementationSpecific`. For normal paths always use `Prefix` or `Exact`.
 
-### 6.6 Default backend and HTTPS
+### 7.6 Default backend and HTTPS
 
 | Feature | Definition | Example |
 |---|---|---|
@@ -421,7 +687,7 @@ spec:
 | **HTTPS on the ALB** | The ALB ends HTTPS with a free **ACM** certificate and can redirect HTTP to HTTPS | Annotations `alb.ingress.kubernetes.io/certificate-arn: <acm-arn>` and `alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'` |
 | **TLS section** | `spec.tls` lists hosts and a Secret holding the certificate (used by NGINX; the ALB uses ACM) | `tls: - hosts: [shop.com] secretName: shop-tls` |
 
-### 6.7 Host or path: which one?
+### 7.7 Host or path: which one?
 
 | Use | When |
 |---|---|
@@ -435,7 +701,7 @@ spec:
 
 # Part 2: Lab
 
-## 7. Lab: two apps behind one ALB
+## 8. Lab: two apps behind one ALB
 
 **Goal:** run 2 apps (nginx and httpd), put one Ingress in front of them with host rules, and test that one ALB sends each request to the right app.
 
@@ -581,12 +847,13 @@ kubectl delete svc nginx httpd
 
 # Wrap-up
 
-## 8. What I learned
+## 9. What I learned
 
 **Part 1: Concepts**
 - Many LoadBalancer Services = many bills; **Ingress** shares **one** load balancer across apps.
 - **Ingress** = HTTP/HTTPS rules by host and path. **Ingress controller** = what makes them work (AWS Load Balancer Controller → ALB on EKS). No controller → no `ADDRESS`, nothing happens.
 - Request flow: Ingress picks the Service, the Service picks the Pods, kube-proxy picks one Pod (on EKS the ALB goes straight to the Pod IP), the container answers.
+- **Where the load balancer comes from:** app Services stay **ClusterIP**. On EKS, `ingressClassName: alb` makes the AWS Load Balancer Controller create **one ALB** from the Ingress (no `type: LoadBalancer` anywhere); `group.name` shares it across Ingresses and namespaces. With NGINX, the one LB comes from the controller's own LoadBalancer Service.
 - Rules: longest path wins; the app gets the **full path**; NGINX can rewrite it, the ALB can't.
 
 **Part 2: Lab**
@@ -598,7 +865,7 @@ kubectl delete svc nginx httpd
 
 ---
 
-## 9. Commands
+## 10. Commands
 
 | Command | Use |
 |---|---|
@@ -611,7 +878,7 @@ kubectl delete svc nginx httpd
 
 ---
 
-## 10. Interview Questions
+## 11. Interview Questions
 
 ### Other Questions
 
@@ -639,10 +906,17 @@ The Ingress object only holds routing rules. The controller and its load balance
 **Q8. What is north-south vs east-west traffic?**
 North-south is traffic entering the cluster from outside, handled by Ingress and the load balancer. East-west is traffic between Pods inside the cluster, handled by Services and controlled with Network Policies.
 
----
+**Q9. Do you set `type: LoadBalancer` on your app Services?**
+No. Every app Service is ClusterIP. `type: LoadBalancer` creates one load balancer per Service, which is costly and can't route by host or path. External traffic comes through one Ingress instead.
 
-**Source:** [Kubernetes docs: Ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/) · [Ingress controllers](https://kubernetes.io/docs/concepts/services-networking/ingress-controllers/) · [AWS Load Balancer Controller: Ingress annotations](https://kubernetes-sigs.github.io/aws-load-balancer-controller/latest/guide/ingress/annotations/) · [Ingress NGINX retirement](https://kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/)
+**Q10. If no Service has `type: LoadBalancer`, how is the ALB created on EKS?**
+The Ingress has `ingressClassName: alb`, so the AWS Load Balancer Controller picks it up and creates the ALB, listener, target groups and rules through the AWS API. The annotations only configure it (scheme, target type, group). With the NGINX controller, the load balancer comes from the controller's own LoadBalancer Service created by its Helm chart.
 
+**Q11. Is an Ingress a Service? Is it cluster-wide?**
+Neither. `kind: Ingress` is its own object and it's namespaced: it can route only to Services in its own namespace. The IngressClass is cluster-wide, and the controller watches Ingresses in every namespace.
+
+**Q12. How do several Ingresses share one ALB?**
+Give them the same `alb.ingress.kubernetes.io/group.name` annotation, even across namespaces. Without it, each Ingress gets its own ALB.
 
 ---
 

@@ -481,8 +481,3 @@ No. It looks at Pod requests: a Pod is Pending when no node has enough unrequest
 ---
 
 **Source:** [Kubernetes docs: Horizontal Pod Autoscaling](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/) · [HPA walkthrough](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/) · [Metrics Server](https://github.com/kubernetes-sigs/metrics-server) · [EKS: Scale cluster compute with Karpenter and Cluster Autoscaler](https://docs.aws.amazon.com/eks/latest/userguide/autoscaling.html) · [EKS Auto Mode](https://docs.aws.amazon.com/eks/latest/userguide/automode.html) · [Karpenter](https://karpenter.sh/)
-
-
----
-
-**Source:** [Kubernetes docs: Horizontal Pod Autoscaling](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/) · [HPA walkthrough](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/) · [Metrics Server](https://github.com/kubernetes-sigs/metrics-server) · [EKS: Scale cluster compute with Karpenter and Cluster Autoscaler](https://docs.aws.amazon.com/eks/latest/userguide/autoscaling.html) · [EKS Auto Mode](https://docs.aws.amazon.com/eks/latest/userguide/automode.html) · [Karpenter](https://karpenter.sh/)
