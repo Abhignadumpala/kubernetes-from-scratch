@@ -16,6 +16,7 @@
 **Part 1: Concepts**
 
 1. [Stateless vs stateful apps](#1-stateless-vs-stateful-apps)
+   - [RoboShop: which component uses which workload](#roboshop-which-component-uses-which-workload)
 2. [StatefulSet](#2-statefulset)
    - [2.1 How each Pod gets its own volume automatically](#21-how-each-pod-gets-its-own-volume-automatically)
    - [2.2 Why the data is safe: what survives what](#22-why-the-data-is-safe-what-survives-what)
@@ -45,6 +46,52 @@
 | RoboShop examples | `frontend`, `catalogue`, `cart`, `user` | `mongodb`, `mysql`, `redis`, `rabbitmq` |
 | Can any copy be replaced by any other? | ✅ Yes | ❌ No: each copy has its own data and role |
 | Workload | **Deployment** | **StatefulSet** |
+
+**The simple test:** "If I delete this Pod and a fresh copy starts, is anything lost?"
+- **No** → stateless → **Deployment**
+- **Yes** → stateful → **StatefulSet** with a PVC
+
+### RoboShop: which component uses which workload
+
+Every RoboShop **microservice** is stateless, because its data lives in a database. Only the **4 data stores** are stateful.
+
+| RoboShop component | Tech | Stateless or stateful | Workload | Why |
+|---|---|---|---|---|
+| **frontend** | Nginx | Stateless | **Deployment** | Serves the UI and forwards `/api/*`; keeps no data |
+| **catalogue** | Node.js | Stateless | **Deployment** | Reads products from MongoDB |
+| **user** | Node.js | Stateless | **Deployment** | Users live in MongoDB, sessions in Redis |
+| **cart** | Node.js | Stateless | **Deployment** | Cart items live in Redis, not in the Pod |
+| **shipping** | Java | Stateless | **Deployment** | Cities and addresses live in MySQL |
+| **payment** | Python | Stateless | **Deployment** | Sends orders to RabbitMQ |
+| **dispatch** | Go | Stateless | **Deployment** | Reads orders from RabbitMQ |
+| **mongodb** | Database | **Stateful** | **StatefulSet** | Stores products and users on disk |
+| **mysql** | Database | **Stateful** | **StatefulSet** | Stores shipping data on disk |
+| **redis** | Cache / store | **Stateful** | **StatefulSet** | Holds cart and session data |
+| **rabbitmq** | Message queue | **Stateful** | **StatefulSet** | Holds queued messages until dispatch reads them |
+
+```
+ Stateless (Deployment, many replicas, any Pod can answer):
+   frontend · catalogue · user · cart · shipping · payment · dispatch
+
+ Stateful (StatefulSet + PVC / EBS, the data lives here):
+   mongodb ◄── catalogue, user        redis    ◄── cart, user
+   mysql   ◄── shipping               rabbitmq ◄── payment ──► dispatch
+```
+
+**Example:** delete a `cart` Pod and nothing is lost: the cart items are in Redis, so the new `cart` Pod works straight away. Delete `mongodb` without its disk and every product and user is gone. That's why only the data stores need a StatefulSet.
+
+> 💡 Loading the MongoDB catalogue data or the MySQL schema is a **one-time task**, so it fits a **Job** ([Workloads](../02-pods-deployments-and-jobs/README.md)), not a Deployment.
+
+**In real projects on AWS** the 4 stateful parts usually move out of the cluster to **managed services**, and EKS runs only the stateless Deployments:
+
+| In-cluster StatefulSet | Managed AWS service |
+|---|---|
+| mongodb | Amazon DocumentDB |
+| mysql | Amazon RDS for MySQL |
+| redis | Amazon ElastiCache |
+| rabbitmq | Amazon MQ |
+
+> **Interview one-liner:** In RoboShop all 7 microservices are stateless Deployments because their data lives in the databases; MongoDB, MySQL, Redis and RabbitMQ are stateful, so they run as StatefulSets with PVCs, or as managed AWS services in production.
 
 ---
 
